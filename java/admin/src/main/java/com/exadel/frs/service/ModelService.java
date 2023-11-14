@@ -16,33 +16,51 @@
 
 package com.exadel.frs.service;
 
+import static java.time.LocalDateTime.now;
+import static java.time.ZoneOffset.UTC;
+import static java.util.UUID.randomUUID;
 import com.exadel.frs.commonservice.annotation.CollectStatistics;
-import com.exadel.frs.commonservice.entity.*;
+import com.exadel.frs.commonservice.entity.App;
+import com.exadel.frs.commonservice.entity.Model;
+import com.exadel.frs.commonservice.projection.ModelStatisticProjection;
+import com.exadel.frs.commonservice.entity.Subject;
+import com.exadel.frs.commonservice.entity.User;
 import com.exadel.frs.commonservice.enums.ModelType;
 import com.exadel.frs.commonservice.enums.StatisticsType;
 import com.exadel.frs.commonservice.exception.ModelNotFoundException;
+import com.exadel.frs.commonservice.repository.ImgRepository;
 import com.exadel.frs.commonservice.repository.ModelRepository;
+import com.exadel.frs.commonservice.repository.ModelStatisticRepository;
 import com.exadel.frs.commonservice.repository.SubjectRepository;
-import com.exadel.frs.dto.ui.ModelCloneDto;
-import com.exadel.frs.dto.ui.ModelCreateDto;
-import com.exadel.frs.dto.ui.ModelUpdateDto;
+import com.exadel.frs.dto.ModelCloneDto;
+import com.exadel.frs.dto.ModelCreateDto;
+import com.exadel.frs.dto.ModelResponseDto;
+import com.exadel.frs.dto.ModelUpdateDto;
 import com.exadel.frs.exception.NameIsNotUniqueException;
+import com.exadel.frs.mapper.MlModelMapper;
 import com.exadel.frs.system.security.AuthorizationManager;
+import java.time.LocalDate;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import javax.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-
-import javax.transaction.Transactional;
-import java.util.*;
-
-import static java.util.UUID.randomUUID;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class ModelService {
+
+    @Value("${statistic.model.months}")
+    private int statisticMonths;
 
     private final ModelRepository modelRepository;
     private final AppService appService;
@@ -51,6 +69,9 @@ public class ModelService {
     private final SubjectRepository subjectRepository;
     private final JdbcTemplate jdbcTemplate;
     private final ModelCloneService modelCloneService;
+    private final MlModelMapper modelMapper;
+    private final ImgRepository imgRepository;
+    private final ModelStatisticRepository statisticRepository;
 
     public Model getModel(final String modelGuid) {
         return modelRepository.findByGuid(modelGuid)
@@ -58,7 +79,9 @@ public class ModelService {
     }
 
     private void validateName(final String newName, final String oldName, final Long appId) {
-        if (oldName.equals(newName)) throw new NameIsNotUniqueException(newName);
+        if (oldName.equals(newName)) {
+            throw new NameIsNotUniqueException(newName);
+        }
         boolean hasNewNameEntryInDb = modelRepository.existsByUniqueNameAndAppId(newName, appId);
         if (hasNewNameEntryInDb) {
             boolean hasNewNameMoreThanOneEntryInDb = modelRepository.countByUniqueNameAndAppId(newName, appId) > 1;
@@ -75,7 +98,7 @@ public class ModelService {
         }
     }
 
-    public Model getModel(final String appGuid, final String modelGuid, final Long userId) {
+    private Model getModel(final String appGuid, final String modelGuid, final Long userId) {
         val model = getModel(modelGuid);
         val user = userService.getUser(userId);
 
@@ -85,13 +108,31 @@ public class ModelService {
         return model;
     }
 
-    public List<Model> getModels(final String appGuid, final Long userId) {
+    public ModelResponseDto getModelDto(final String appGuid, final String modelGuid, final Long userId) {
+        Model model = getModel(appGuid, modelGuid, userId);
+        return getModelResponseDto(appGuid, model);
+    }
+
+    private ModelResponseDto getModelResponseDto(String appGuid, Model model) {
+        String apiKey = model.getApiKey();
+        Long subjectCount = subjectRepository.countAllByApiKey(apiKey);
+        Long imageCount = imgRepository.getImageCountByApiKey(apiKey);
+
+        ModelResponseDto modelResponseDto = modelMapper.toResponseDto(model, appGuid);
+        modelResponseDto.setSubjectCount(subjectCount);
+        modelResponseDto.setImageCount(imageCount);
+        return modelResponseDto;
+    }
+
+    public List<ModelResponseDto> getModels(final String appGuid, final Long userId) {
         val app = appService.getApp(appGuid);
         val user = userService.getUser(userId);
 
         authManager.verifyReadPrivilegesToApp(user, app);
 
-        return modelRepository.findAllByAppId(app.getId());
+        return modelRepository.findAllByAppId(app.getId())
+                              .stream()
+                              .map(model -> modelMapper.toResponseDto(model, model.apiKey())).collect(Collectors.toList());
     }
 
     private Model createModel(final ModelCreateDto modelCreateDto, final String appGuid, final Long userId) {
@@ -114,6 +155,7 @@ public class ModelService {
                     .apiKey(randomUUID().toString())
                     .app(app)
                     .type(ModelType.valueOf(modelCreateDto.getType()))
+                    .createdDate(now())
                     .build();
     }
 
@@ -154,25 +196,10 @@ public class ModelService {
 
         val clonedModel = modelCloneService.cloneModel(model, modelCloneDto);
 
-        List<AppModel> clonedAppModelAccessList = cloneAppModels(model, clonedModel);
-        clonedModel.setAppModelAccess(clonedAppModelAccessList);
-
         // caution: time consuming operation
         cloneSubjects(model.getApiKey(), clonedModel.getApiKey());
 
         return clonedModel;
-    }
-
-    private List<AppModel> cloneAppModels(final Model model, final Model clonedModel) {
-        val cloneAppModelAccessList = new ArrayList<AppModel>();
-        for (val appModel : model.getAppModelAccess()) {
-            AppModel cloneAppModelAccess = new AppModel(appModel);
-            cloneAppModelAccess.setId(new AppModelId(clonedModel.getApp().getId(), clonedModel.getId()));
-            cloneAppModelAccess.setModel(clonedModel);
-
-            cloneAppModelAccessList.add(cloneAppModelAccess);
-        }
-        return cloneAppModelAccessList;
     }
 
     @Transactional
@@ -204,14 +231,19 @@ public class ModelService {
                 }
         );
 
-        String sql = "select " +
-                "   e.id as embedding_id, " +
-                "   i.id as img_id " +
-                " from " +
-                "   embedding e left join img i on e.img_id = i.id " +
-                "   inner join subject s on s.id = e.subject_id " +
-                " where " +
-                "   s.id = ?";
+        String sql = """
+                select
+                    e.id as embedding_id,
+                    i.id as img_id
+                from
+                    embedding e
+                left join
+                    img i on e.img_id = i.id
+                inner join
+                    subject s on s.id = e.subject_id
+                where
+                    s.id = ?
+                """;
 
         jdbcTemplate.query(
                 sql,
@@ -221,7 +253,10 @@ public class ModelService {
                     var sourceImgId = rc.getObject("img_id", UUID.class); // could be null (for demo embeddings)
                     jdbcTemplate.update(
                             "insert into embedding(id, subject_id, embedding, calculator, img_id) select ?, ?, e.embedding, e.calculator, ? from embedding e where e.id = ?",
-                            UUID.randomUUID(), newSubjectId, sourceImgId2NewImgId.get(sourceImgId), sourceEmbeddingId
+                            UUID.randomUUID(),
+                            newSubjectId,
+                            sourceImgId2NewImgId.get(sourceImgId),
+                            sourceEmbeddingId
                     );
                 }
         );
@@ -265,5 +300,19 @@ public class ModelService {
         authManager.verifyWritePrivilegesToApp(user, model.getApp());
 
         modelRepository.deleteById(model.getId());
+    }
+
+    public List<ModelStatisticProjection> getSummarizedByDayModelStatistics(final String appGuid, final String guid, final Long userId) {
+        val model = getModel(guid);
+        val user = userService.getUser(userId);
+
+        authManager.verifyReadPrivilegesToApp(user, model.getApp());
+        authManager.verifyAppHasTheModel(appGuid, model);
+
+        val now = LocalDate.now(UTC);
+        val endDate = Date.from(now.atStartOfDay(UTC).toInstant());
+        val startDate = Date.from(now.minusMonths(statisticMonths).atStartOfDay(UTC).toInstant());
+
+        return statisticRepository.findAllSummarizedByDay(guid, startDate, endDate);
     }
 }

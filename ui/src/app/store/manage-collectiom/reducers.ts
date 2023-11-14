@@ -38,12 +38,12 @@ import {
   uploadImage,
   uploadImageSuccess,
   uploadImageFail,
-  getSubjectExamplesSuccess,
   deleteSubjectExample,
   deleteSubjectExampleFail,
   deleteSubjectExampleSuccess,
   deleteItemFromUploadOrder,
   getSubjectExamples,
+  getSubjectExamplesSuccess,
   getSubjectExamplesFail,
   resetSubjectExamples,
   setSubjectMode,
@@ -60,7 +60,8 @@ function updateCollectionItemStatus(
   state: CollectionEntityState,
   item: CollectionItem,
   status: CircleLoadingProgressEnum,
-  error?: string
+  error?: string,
+  id?: string
 ): CollectionEntityState {
   const collectionCopy = [...state.collection];
   const targetItemIndex = collectionCopy.findIndex(collectionCopyItem => item.url === collectionCopyItem.url);
@@ -69,6 +70,7 @@ function updateCollectionItemStatus(
     collectionCopy[targetItemIndex] = {
       ...collectionCopy[targetItemIndex],
       status,
+      id,
     };
 
     if (error) {
@@ -111,7 +113,7 @@ const reducer: ActionReducer<CollectionEntityState> = createReducer(
   on(deleteSubjectSuccess, state => ({ ...state, isPending: false, subject: null })),
   on(loadSubjectsFail, addSubjectFail, editSubjectFail, deleteSubjectFail, deleteSubjectSuccess, state => ({ ...state, isPending: false })),
   on(loadSubjectsSuccess, (state, { subjects }) => ({ ...state, isPending: false, subjects })),
-  on(setSelectedSubject, (state, { subject }) => ({ ...state, subject })),
+  on(setSelectedSubject, (state, { subject }) => ({ ...state, subject, collection: [] })),
   on(resetSubjects, () => ({ ...initialState })),
   on(getSubjectExamples, state => ({ ...state, isCollectionPending: true })),
   on(getSubjectExamplesSuccess, (state, { items, apiKey }) => {
@@ -126,6 +128,7 @@ const reducer: ActionReducer<CollectionEntityState> = createReducer(
       subject: item.subject,
       page: item['page'],
       totalPages: item['totalPages'],
+      totalElements: item['totalElements'],
     }));
 
     return {
@@ -135,10 +138,15 @@ const reducer: ActionReducer<CollectionEntityState> = createReducer(
     };
   }),
 
-  on(getSubjectMediaNextPage, state => ({ ...state, isCollectionPending: true })),
+  on(getSubjectMediaNextPage, state => ({ ...state, isCollectionPending: false })),
   on(getNextPageSubjectExamplesSuccess, (state, { items, apiKey }) => {
     const collectionCopy = [
-      ...state.collection.filter(item => item.status !== CircleLoadingProgressEnum.Uploaded && item.subject === state.subject),
+      ...state.collection.filter(
+        item =>
+          item.status !== CircleLoadingProgressEnum.Uploaded &&
+          item.status !== CircleLoadingProgressEnum.Failed &&
+          item.subject === state.subject
+      ),
     ];
 
     let prevCollection = [...state.collection];
@@ -150,6 +158,7 @@ const reducer: ActionReducer<CollectionEntityState> = createReducer(
       subject: item.subject,
       page: item['page'],
       totalPages: item['totalPages'],
+      totalElements: item['totalElements'],
     }));
 
     return {
@@ -160,14 +169,21 @@ const reducer: ActionReducer<CollectionEntityState> = createReducer(
   }),
 
   on(getSubjectExamplesFail, state => ({ ...state, isCollectionPending: false })),
-  on(addFileToCollection, (state, { url, file, subject }) => ({
-    ...state,
-    collection: [...state.collection, { url, file, subject, status: CircleLoadingProgressEnum.OnHold }],
-  })),
+
+  on(addFileToCollection, (state, { url, file, subject }) => {
+    return {
+      ...state,
+      collection: [
+        ...state.collection.filter(item => item.subject === state.subject && item.url !== url),
+        { url, file, subject, status: CircleLoadingProgressEnum.OnHold },
+      ],
+    };
+  }),
   on(uploadImage, deleteSubjectExample, (state, { item }) => updateCollectionItemStatus(state, item, CircleLoadingProgressEnum.InProgress)),
-  on(uploadImageSuccess, deleteSubjectExampleSuccess, (state, { item }) =>
-    updateCollectionItemStatus(state, item, CircleLoadingProgressEnum.Uploaded)
+  on(uploadImageSuccess, (state, { item, itemId }) =>
+    updateCollectionItemStatus(state, item, CircleLoadingProgressEnum.Uploaded, null, itemId)
   ),
+  on(deleteSubjectExampleSuccess, (state, { item }) => updateCollectionItemStatus(state, item, CircleLoadingProgressEnum.Uploaded)),
   on(uploadImageFail, deleteSubjectExampleFail, (state, { item, error }) =>
     updateCollectionItemStatus(state, item, CircleLoadingProgressEnum.Failed, error)
   ),

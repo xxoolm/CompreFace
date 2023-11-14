@@ -14,6 +14,10 @@
  * permissions and limitations under the License.
  */
 import { Component, ElementRef, EventEmitter, Input, Output, ViewChild } from '@angular/core';
+import { Router } from '@angular/router';
+import { ServiceTypes } from 'src/app/data/enums/service-types.enum';
+
+const BYTES_IN_MB = 1024 * 1024;
 
 @Component({
   selector: 'app-drag-n-drop',
@@ -24,6 +28,28 @@ export class DragNDropComponent {
   @ViewChild('fileDropRef') fileDropEl: ElementRef;
   @Input() title: string;
   @Input() label: string;
+  @Input()
+  set maxImageSize(bytesValue: number) {
+    if (bytesValue) {
+      const mbValue = bytesValue / BYTES_IN_MB;
+      this._maxImageSize = `${mbValue}Mb (${bytesValue} bytes)`;
+    }
+  }
+
+  get maxImageSizeDisplay(): string {
+    return this._maxImageSize;
+  }
+
+  displayDescription: boolean;
+
+  private _maxImageSize: string;
+
+  constructor(private router: Router) {}
+
+  ngOnInit(): void {
+    this.router.url.includes('manage-collection') ? (this.displayDescription = false) : (this.displayDescription = true);
+  }
+  serviceType: ServiceTypes;
 
   viewComponentColumn: boolean;
   @Input('viewComponentColumn') set setViewComponentColumn(val: boolean | '') {
@@ -37,7 +63,10 @@ export class DragNDropComponent {
 
   @Output() upload: EventEmitter<File[]> = new EventEmitter();
 
-  constructor() {}
+  onChange(event): void {
+    this.fileBrowseHandler(event.target.files);
+    this.fileDropEl.nativeElement.value = null;
+  }
 
   /**
    * on file drop handler

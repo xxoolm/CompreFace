@@ -21,11 +21,13 @@
   position: fixed;
   width: 100%;
   bottom: 0;
+  z-index: 5;
 }
 
 .mat-toolbar {
   height: 50px;
   min-height: 50px;
+  background: $super-light-gray;
 }
 
 .mat-toolbar-row {

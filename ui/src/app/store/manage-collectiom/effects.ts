@@ -62,6 +62,9 @@ import { CircleLoadingProgressEnum } from 'src/app/data/enums/circle-loading-pro
 import { selectCurrentApiKey } from '../model/selectors';
 import { SubjectModeEnum } from 'src/app/data/enums/subject-mode.enum';
 import { CollectionItem } from 'src/app/data/interfaces/collection';
+import { selectMaxFileSize } from '../image-size/selectors';
+import { Routes } from 'src/app/data/enums/routers-url.enum';
+import { Router } from '@angular/router';
 
 @Injectable()
 export class CollectionEffects {
@@ -69,6 +72,7 @@ export class CollectionEffects {
     private actions: Actions,
     private collectionService: CollectionService,
     private snackBarService: SnackBarService,
+    private router: Router,
     private store: Store<CollectionEntityState>
   ) {}
 
@@ -176,17 +180,26 @@ export class CollectionEffects {
     ofType(readImageFiles),
     withLatestFrom(this.store.select(selectCollectionSubject)),
     switchMap(([action, subject]) => {
+      const fileUrls = [];
+
       return from(action.fileDescriptors).pipe(
         mergeMap(file => {
           const fileReader = new FileReader();
           const resSubject = new Subject<{ file: File; url: string; subject: string }>();
 
-          fileReader.onload = e =>
+          fileReader.onload = e => {
+            const url = e.target.result as string;
+
+            if (fileUrls.indexOf(url) !== -1) return;
+
             resSubject.next({
-              url: e.target.result as string,
+              url: url,
               file,
               subject,
             });
+
+            fileUrls.push(url);
+          };
           fileReader.readAsDataURL(file);
 
           return resSubject.asObservable();
@@ -197,10 +210,13 @@ export class CollectionEffects {
   );
 
   collectionItem: CollectionItem;
+  currentSubject: string;
 
   @Effect()
   startUploadOrder$ = this.actions.pipe(
     ofType(startUploadImageOrder),
+    withLatestFrom(this.store.select(selectCollectionSubject)),
+    tap(([, subject]) => (this.currentSubject = subject)),
     switchMap(() =>
       this.store.select(selectImageCollection).pipe(
         take(1),
@@ -209,11 +225,12 @@ export class CollectionEffects {
       )
     ),
     map(item => {
-      if (item) {
+      if (item && this.currentSubject === item.subject) {
         this.collectionItem = item;
         return uploadImage({ item, continueUpload: true });
       }
-      let subject = this.collectionItem.subject;
+
+      let subject = this.currentSubject;
       return getSubjectExamples({ subject });
     })
   );
@@ -221,14 +238,18 @@ export class CollectionEffects {
   @Effect()
   uploadImage$ = this.actions.pipe(
     ofType(uploadImage),
-    withLatestFrom(this.store.select(selectCurrentApiKey), this.store.select(selectCollectionSubject)),
-    switchMap(([{ item, continueUpload }, apiKey, subject]) => {
+    withLatestFrom(
+      this.store.select(selectCurrentApiKey),
+      this.store.select(selectCollectionSubject),
+      this.store.select(selectMaxFileSize)
+    ),
+    switchMap(([{ item, continueUpload }, apiKey, subject, maxFileSize]) => {
       const { file } = item;
-      const sizeInBytes = 5242880;
+      const sizeInBytes = maxFileSize.clientMaxFileSize;
       const ext = /(\.jpg|\.jpeg|\.webp|\.png)$/i;
       const type = /(\/jpg|\/jpeg|\/webp|\/png)$/i;
 
-      if (file.size > sizeInBytes) {
+      if (sizeInBytes && file.size > sizeInBytes) {
         return of(uploadImageFail({ error: `Invalid File Size ! \n File Name: ${file.name}`, item, continueUpload }));
       }
       if (!ext.exec(file.name) || !type.exec(file.type)) {
@@ -236,9 +257,12 @@ export class CollectionEffects {
       }
 
       return this.collectionService.uploadSubjectExamples(item, subject, apiKey).pipe(
-        map(() => uploadImageSuccess({ item, continueUpload })),
+        map(res => {
+          const itemId = res.image_id;
+          return uploadImageSuccess({ item, itemId, continueUpload });
+        }),
         catchError(error => {
-          return of(uploadImageFail({ error: error.error?.message, item, continueUpload }));
+          return of(uploadImageFail({ error: error.error?.message + `! \n File Name: ${item.file.name}`, item, continueUpload }));
         })
       );
     })
@@ -277,5 +301,14 @@ export class CollectionEffects {
         catchError(error => of(deleteSelectedExamplesFail({ error })))
       )
     )
+  );
+
+  //Listen for the 'loadModelsFail'
+  @Effect({ dispatch: false })
+  loadFail$ = this.actions.pipe(
+    ofType(loadSubjectsFail),
+    tap(() => {
+      this.router.navigateByUrl(Routes.Home);
+    })
   );
 }
